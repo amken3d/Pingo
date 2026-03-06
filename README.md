@@ -1,5 +1,5 @@
 # Pingo
-
+![Screenshot.png](assets/Screenshot.png)
 A Raspberry Pi Pico / Pico 2 pin selector desktop application built with [ImmyGo](https://github.com/amken3d/immygo) — designed to showcase the framework's capabilities while being a genuinely useful hardware development tool.
 
 ## Features
