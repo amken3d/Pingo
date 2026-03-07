@@ -223,3 +223,6 @@ assets/
 ## License
 
 See [LICENSE](LICENSE) for details.
+
+Development Notes
+This project was built with significant AI assistance (primarily Claude by Anthropic) for code generation, documentation, and scaffolding. Architecture, design decisions, hardware domain knowledge, and review are my own. I’m a solo founder shipping across embedded hardware, firmware, and desktop software — AI-assisted development is core to how I work at that breadth.
