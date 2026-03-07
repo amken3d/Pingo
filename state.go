@@ -19,8 +19,6 @@
 package main
 
 import (
-	"image"
-
 	"gioui.org/layout"
 	giowidget "gioui.org/widget"
 
@@ -179,16 +177,38 @@ var settingsScrollList = func() *giowidget.List {
 	return l
 }()
 
-// ─── Rasterised Board Image ──────────────────────────────────────────
-// Loaded once at startup from the embedded SVG. See svg.go.
+// ─── Board Selector Dropdown ─────────────────────────────────────────
+// Persistent dropdown widget for selecting the board/chip variant.
 
-var picoImage image.Image
+var boardDropdown = ui.Dropdown(
+	"Pico", "Pico 2", "RP2040", "RP2350A", "RP2350B",
+).Placeholder("Board / Chip").OnSelect(func(i int, s string) {
+	switchBoard(i)
+})
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
+var boardList = []pindata.Board{
+	pindata.Pico,
+	pindata.Pico2,
+	pindata.RP2040Chip,
+	pindata.RP2350AChip,
+	pindata.RP2350BChip,
+}
+
 func currentSpec() pindata.BoardSpec {
-	if boardChoice.Get() == 1 {
-		return pindata.GetSpec(pindata.Pico2)
+	idx := boardChoice.Get()
+	if idx >= 0 && idx < len(boardList) {
+		return pindata.GetSpec(boardList[idx])
 	}
 	return pindata.GetSpec(pindata.Pico)
+}
+
+func switchBoard(idx int) {
+	if boardChoice.Get() != idx {
+		boardChoice.Set(idx)
+		selections.Set(map[int]pindata.Function{})
+		activeFilter.Set("All")
+		selectedPeriphFunc.Set("")
+	}
 }

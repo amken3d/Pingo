@@ -1,13 +1,16 @@
 // Package pindata provides comprehensive pin mapping data for Raspberry Pi
-// Pico (RP2040) and Pico 2 (RP2350) boards.
+// Pico boards and bare RP-series microcontroller chips.
 package pindata
 
-// Board identifies a specific Raspberry Pi Pico variant.
+// Board identifies a specific board or bare chip variant.
 type Board int
 
 const (
-	Pico  Board = iota // RP2040-based original Pico
-	Pico2              // RP2350-based Pico 2
+	Pico        Board = iota // RP2040-based Pico board
+	Pico2                    // RP2350A-based Pico 2 board
+	RP2040Chip               // Bare RP2040 chip (30 GPIOs)
+	RP2350AChip              // Bare RP2350A chip (30 GPIOs)
+	RP2350BChip              // Bare RP2350B chip (48 GPIOs)
 )
 
 func (b Board) String() string {
@@ -16,9 +19,20 @@ func (b Board) String() string {
 		return "Raspberry Pi Pico (RP2040)"
 	case Pico2:
 		return "Raspberry Pi Pico 2 (RP2350)"
+	case RP2040Chip:
+		return "RP2040 (bare chip)"
+	case RP2350AChip:
+		return "RP2350A (bare chip)"
+	case RP2350BChip:
+		return "RP2350B (bare chip)"
 	default:
 		return "Unknown"
 	}
+}
+
+// IsChip returns true for bare chip variants (no physical board layout).
+func (b Board) IsChip() bool {
+	return b == RP2040Chip || b == RP2350AChip || b == RP2350BChip
 }
 
 // Function describes a peripheral function a GPIO can serve.
@@ -59,9 +73,8 @@ type BoardSpec struct {
 	Pins        []Pin
 }
 
-// GetSpec returns the full board specification for the given board.
+// GetSpec returns the full board specification for the given board or chip.
 func GetSpec(b Board) BoardSpec {
-	pins := buildPins() // pin header is identical for both boards
 	switch b {
 	case Pico2:
 		return BoardSpec{
@@ -77,7 +90,55 @@ func GetSpec(b Board) BoardSpec {
 			PIOBlocks:   3,
 			PIOSMs:      4,
 			USBSupport:  true,
-			Pins:        pins,
+			Pins:        buildPins(),
+		}
+	case RP2040Chip:
+		return BoardSpec{
+			Board:       RP2040Chip,
+			Name:        "RP2040",
+			Chip:        "RP2040",
+			FlashKB:     0, // external flash required
+			RAMKB:       264,
+			CPUCores:    2,
+			CPUArch:     "ARM Cortex-M0+",
+			MaxClockMHz: 133,
+			PWMChannels: 16,
+			PIOBlocks:   2,
+			PIOSMs:      4,
+			USBSupport:  true,
+			Pins:        buildRP2040QFN56(),
+		}
+	case RP2350AChip:
+		return BoardSpec{
+			Board:       RP2350AChip,
+			Name:        "RP2350A",
+			Chip:        "RP2350A",
+			FlashKB:     0, // external flash required
+			RAMKB:       520,
+			CPUCores:    2,
+			CPUArch:     "ARM Cortex-M33 / Hazard3 RISC-V",
+			MaxClockMHz: 150,
+			PWMChannels: 24,
+			PIOBlocks:   3,
+			PIOSMs:      4,
+			USBSupport:  true,
+			Pins:        buildRP2350AQFN60(),
+		}
+	case RP2350BChip:
+		return BoardSpec{
+			Board:       RP2350BChip,
+			Name:        "RP2350B",
+			Chip:        "RP2350B",
+			FlashKB:     0, // external flash required
+			RAMKB:       520,
+			CPUCores:    2,
+			CPUArch:     "ARM Cortex-M33 / Hazard3 RISC-V",
+			MaxClockMHz: 150,
+			PWMChannels: 24,
+			PIOBlocks:   3,
+			PIOSMs:      4,
+			USBSupport:  true,
+			Pins:        buildRP2350BQFN80(),
 		}
 	default: // Pico
 		return BoardSpec{
@@ -93,7 +154,7 @@ func GetSpec(b Board) BoardSpec {
 			PIOBlocks:   2,
 			PIOSMs:      4,
 			USBSupport:  true,
-			Pins:        pins,
+			Pins:        buildPins(),
 		}
 	}
 }
