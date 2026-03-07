@@ -1,16 +1,26 @@
 # Pingo
+
 ![Screenshot.png](assets/Screenshot.png)
+
 A Raspberry Pi Pico / Pico 2 pin selector desktop application built with [ImmyGo](https://github.com/amken3d/immygo) — designed to showcase the framework's capabilities while being a genuinely useful hardware development tool.
 
 ## Features
 
 - **Interactive Pinout Viewer** — Visual SVG-rendered board diagram with the full 40-pin header
+- **Bare Chip Support** — Dynamic QFN package rendering for RP2040 (QFN-56), RP2350A (QFN-60), and RP2350B (QFN-80) with all physical pins visible
+- **Pin Hover Details** — Hover over any pin (GPIO, power, ground, or special) to see its identity, assignment status, and available functions
 - **Pin Selector** — Browse and assign GPIO functions (SPI, I2C, UART, PWM, ADC, PIO) with category filtering
 - **Conflict Detection** — Automatically flags when selected peripherals share the same GPIO
-- **Board Switching** — Toggle between Pico (RP2040) and Pico 2 (RP2350) specs instantly
+- **Board / Chip Switching** — Dropdown selector to switch between Pico, Pico 2, RP2040, RP2350A, and RP2350B instantly
 - **AI Assistant** — Built-in chat for pin selection advice, powered by multiple LLM backends (Ollama, Anthropic Claude, Yzma local GGUF)
 - **Dark/Light Themes** — Runtime theme switching with ImmyGo's reactive theme system
 - **Persistent Settings** — AI provider config saved to `~/.config/pingo/settings.json`
+
+### Bare Chip QFN View
+
+![RP2.png](assets/RP2.png)
+
+Select a bare chip variant (RP2040, RP2350A, RP2350B) from the dropdown to see its QFN package rendered dynamically with all physical pins — GPIO, power, ground, and special pins like QSPI, USB, and SWD. Hover over any pin for details, click GPIO pins to assign peripheral functions.
 
 ## How ImmyGo Is Used
 
@@ -108,15 +118,21 @@ Building Pingo surfaced several practical insights for working with ImmyGo and G
 
 3. **SVG rendering requires a manual pipeline.** Gio has no built-in SVG support. We embed the SVG with `//go:embed`, parse it with `oksvg`, rasterize onto an `image.NRGBA` canvas with `rasterx`, and display it as a bitmap. Rasterizing once at startup at 6x scale keeps it crisp on HiDPI.
 
-4. **`Flex` is essential for scroll regions.** A `ui.Scroll` needs to know its available height. Wrapping the scrollable body in `ui.Flex(1, ...)` gives it "all remaining space" after fixed elements like the AppBar, which enables proper scrolling.
+4. **Dynamic rendering beats static assets for variable content.** The QFN chip diagrams are drawn dynamically with Gio primitives (`clip.Rect`, `paint.ColorOp`, `op.Offset`) rather than pre-made SVGs. This lets pin colors update in real-time based on selection state and hover, and scales naturally to different pin counts (56/60/80).
 
-5. **Separate domain logic from UI.** The `pindata/` package has zero UI imports. Board specs, pin definitions, and conflict detection are pure Go — testable and reusable independently of ImmyGo.
+5. **Hover with plain variables, not reactive state.** Using `ui.NewState[*Pin]` for hover caused infinite re-render loops — every frame created a new pointer, which ImmyGo saw as a state change. The fix: a plain `var currentHoverPin *Pin` set during diagram layout and read by a `ViewFunc` in the same frame. Gio's `Clickable.Hovered()` only returns true on the frame with the pointer event, so the value persists until the next hover.
 
-6. **AI calls must be async.** `assistant.Chat()` and `LoadAsync()` block the calling goroutine. Running them on the main thread freezes the UI. Always wrap in `go func() { ... }()`.
+6. **`Flex` is essential for scroll regions.** A `ui.Scroll` needs to know its available height. Wrapping the scrollable body in `ui.Flex(1, ...)` gives it "all remaining space" after fixed elements like the AppBar, which enables proper scrolling.
 
-7. **Page routing is just a switch.** No router library needed. A package-level `currentPage int` and a `switch` statement in the build function is simple and effective. The `SideNav.WithOnSelect()` callback updates the index.
+7. **Separate domain logic from UI.** The `pindata/` package has zero UI imports. Board specs, pin definitions, and conflict detection are pure Go — testable and reusable independently of ImmyGo. Peripheral function mapping (SPI, I2C, UART, PWM, ADC) is computed algorithmically from GPIO numbers, matching the RP2040/RP2350 datasheets.
 
-8. **Settings persistence needs care with secrets.** Non-secret config (provider, model, temperature) is saved to `~/.config/pingo/settings.json`. API keys are *never* written to disk — they're held in memory for the session or read from environment variables.
+8. **AI calls must be async.** `assistant.Chat()` and `LoadAsync()` block the calling goroutine. Running them on the main thread freezes the UI. Always wrap in `go func() { ... }()`.
+
+9. **Page routing is just a switch.** No router library needed. A package-level `currentPage int` and a `switch` statement in the build function is simple and effective. The `SideNav.WithOnSelect()` callback updates the index.
+
+10. **Settings persistence needs care with secrets.** Non-secret config (provider, model, temperature) is saved to `~/.config/pingo/settings.json`. API keys are *never* written to disk — they're held in memory for the session or read from environment variables.
+
+11. **Reserve fixed space for dynamic content.** The hover detail panel always renders exactly 2 lines regardless of content, using a space placeholder when empty. This prevents layout jumps when hovering between pins with different amounts of information.
 
 ## Getting Started
 
@@ -188,15 +204,20 @@ Configure providers in the Settings page within the app.
 ## Project Structure
 
 ```
-main.go           App entry point, ui.Run, theme, window options
-state.go          Reactive state, AI engine, persistent widgets
-layout.go         Main layout: AppBar, SideNav, page routing
-page_pinout.go    Pinout viewer + pin selector + AI chat
-page_mypins.go    Selected pins summary with conflict detection
-page_settings.go  AI provider & app settings
-svg.go            Embedding & rasterizing SVG assets
-config.go         Settings persistence
-pindata/          Domain model — board specs, pin definitions, categories
+main.go              App entry point, ui.Run, theme, window options
+state.go             Reactive state, AI engine, persistent widgets, board switching
+layout.go            Main layout: AppBar, SideNav, page routing
+page_pinout.go       Pinout viewer, QFN chip diagram, pin selector, hover details, AI chat
+page_mypins.go       Selected pins summary with conflict detection
+page_settings.go     AI provider & app settings
+svg.go               Embedding & rasterizing SVG assets
+config.go            Settings persistence
+pindata/
+  pindata.go         Board specs, pin definitions, categories, conflict detection
+  rp_chips.go        Full QFN pinouts for RP2040, RP2350A, RP2350B with algorithmic peripheral mapping
+assets/
+  pico.svg           Pico/Pico 2 board SVG (from tinygo-org/playground)
+  qfn56/60/80.svg    QFN package reference SVGs
 ```
 
 ## License
