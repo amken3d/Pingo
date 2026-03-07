@@ -17,12 +17,12 @@
 //
 // # How ImmyGo Apps Work
 //
-// 1. Call ui.Run() with a title, a build function, and options.
-// 2. The build function returns a ui.View tree every frame.
-// 3. ImmyGo handles Gio's layout.Context/Dimensions internally.
-// 4. Use State[T] for reactive values that trigger re-renders.
-// 5. Stateful widgets (SideNav, Toggle, etc.) must persist across
-//    frames — store them in package-level variables.
+//  1. Call ui.Run() with a title, a build function, and options.
+//  2. The build function returns a ui.View tree every frame.
+//  3. ImmyGo handles Gio's layout.Context/Dimensions internally.
+//  4. Use State[T] for reactive values that trigger re-renders.
+//  5. Stateful widgets (SideNav, Toggle, etc.) must persist across
+//     frames — store them in package-level variables.
 //
 // # Running
 //
@@ -39,9 +39,9 @@ import (
 )
 
 func main() {
-	// Load the embedded Pico SVG into a raster image for display.
+	// Load all embedded SVGs (board + chip) into raster images.
 	// See svg.go for how embed + oksvg/rasterx work together.
-	picoImage = loadPicoSVG()
+	loadAllSVGs()
 
 	// Load persisted settings into UI widgets before AI init.
 	loadSettingsIntoUI()

@@ -54,18 +54,12 @@ func buildApp() ui.View {
 	)
 }
 
-// headerBar creates the top AppBar.
-//
-// ui.AppBar("title") creates a bar. .Actions(...) adds views to the right.
-// Any View can be an action — here we use Buttons.
+// headerBar creates the top AppBar with a board/chip dropdown and theme toggle.
 func headerBar() ui.View {
 	spec := currentSpec()
 	return ui.AppBar("Pingo — "+spec.Name).
 		Actions(
-			// Board toggle buttons
-			ui.Button("Pico").OnClick(func() { boardChoice.Set(0) }),
-			ui.Button("Pico 2").OnClick(func() { boardChoice.Set(1) }),
-
+			boardDropdown,
 			ui.Text("Dark"),
 			themeToggle,
 		)

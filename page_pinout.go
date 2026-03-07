@@ -35,8 +35,14 @@ import (
 	"github.com/amken3d/immygo/ui"
 )
 
-// Persistent click state for each of the 40 physical pins.
-var pinClickables [40]widget.Clickable
+// Persistent click state for physical pins.
+// 80 covers the largest variant (RP2350B QFN-80).
+var pinClickables [80]widget.Clickable
+
+// currentHoverPin holds the pin currently under the cursor.
+// Plain variable (not reactive state) to avoid infinite re-render loops.
+// Set during diagram layout, read by pinHoverDetail's ViewFunc in the same frame.
+var currentHoverPin *pindata.Pin
 
 // Board display constants.
 const (
@@ -53,27 +59,42 @@ const (
 func pinoutPage() ui.View {
 	spec := currentSpec()
 
-	// DIP-40 layout: pins 1-20 down the left, pins 21-40 up the right.
-	var leftPins, rightPins []pindata.Pin
-	for _, p := range spec.Pins {
-		if p.PhysicalPin <= 20 {
-			leftPins = append(leftPins, p)
-		} else {
-			rightPins = append(rightPins, p)
+	var pinDiagram ui.View
+
+	if spec.Board.IsChip() {
+		// Bare chip: render QFN package with all physical pins.
+		allPins := spec.Pins
+		pinDiagram = ui.ViewFunc(func(gtx layout.Context, th *theme.Theme) layout.Dimensions {
+			return layoutChipDiagram(gtx, allPins)
+		})
+	} else {
+		// Board: DIP-40 layout with SVG image.
+		var leftPins, rightPins []pindata.Pin
+		for _, p := range spec.Pins {
+			if p.PhysicalPin <= 20 {
+				leftPins = append(leftPins, p)
+			} else {
+				rightPins = append(rightPins, p)
+			}
 		}
-	}
-	// Right side pins are numbered bottom-to-top (21 at bottom, 40 at top).
-	// Reverse so they render top-to-bottom matching the left side rows.
-	for i, j := 0, len(rightPins)-1; i < j; i, j = i+1, j-1 {
-		rightPins[i], rightPins[j] = rightPins[j], rightPins[i]
+		// Right side pins are numbered bottom-to-top (21 at bottom, 40 at top).
+		// Reverse so they render top-to-bottom matching the left side rows.
+		for i, j := 0, len(rightPins)-1; i < j; i, j = i+1, j-1 {
+			rightPins[i], rightPins[j] = rightPins[j], rightPins[i]
+		}
+		pinDiagram = ui.ViewFunc(func(gtx layout.Context, th *theme.Theme) layout.Dimensions {
+			return layoutPinDiagram(gtx, leftPins, rightPins)
+		})
 	}
 
-	pinDiagram := ui.ViewFunc(func(gtx layout.Context, th *theme.Theme) layout.Dimensions {
-		return layoutPinDiagram(gtx, leftPins, rightPins)
-	})
-
-	specLine := fmt.Sprintf("%s — %s, %d cores @ %d MHz, %d KB RAM, %d KB Flash",
-		spec.Chip, spec.CPUArch, spec.CPUCores, spec.MaxClockMHz, spec.RAMKB, spec.FlashKB)
+	var specLine string
+	if spec.FlashKB > 0 {
+		specLine = fmt.Sprintf("%s — %s, %d cores @ %d MHz, %d KB RAM, %d KB Flash",
+			spec.Chip, spec.CPUArch, spec.CPUCores, spec.MaxClockMHz, spec.RAMKB, spec.FlashKB)
+	} else {
+		specLine = fmt.Sprintf("%s — %s, %d cores @ %d MHz, %d KB SRAM, external flash",
+			spec.Chip, spec.CPUArch, spec.CPUCores, spec.MaxClockMHz, spec.RAMKB)
+	}
 	periphLine := fmt.Sprintf("SPI: %d  |  I2C: %d  |  UART: %d  |  ADC: %d  |  PWM: %d pins",
 		len(pindata.PinsForCategory(spec, "SPI")),
 		len(pindata.PinsForCategory(spec, "I2C")),
@@ -151,12 +172,11 @@ func pinoutPage() ui.View {
 		peripheralSelector(spec),
 		ui.Text("Select a peripheral, pick a function, then click an eligible pin. Click an assigned pin to remove it.").Caption(),
 		ui.Divider(),
+		pinHoverDetail(),
 		ui.HStack(
 			ui.Flex(3, pinDiagram),
 			ui.Flex(2, rightPanel),
 		),
-		ui.Divider(),
-		legendView(),
 	).Spacing(8)
 }
 
@@ -344,15 +364,16 @@ func layoutPinDiagram(gtx layout.Context, leftPins, rightPins []pindata.Pin) lay
 	pinSpacing := float64(boardH) * (pinSpacingMM / svgTotalMM)
 
 	// ── Draw the board image ────────────────────────────────────────
-	if picoImage != nil {
-		imgBounds := picoImage.Bounds()
+	img := boardImage(currentSpec().Board)
+	if img != nil {
+		imgBounds := img.Bounds()
 		scaleX := float32(boardW) / float32(imgBounds.Dx())
 		scaleY := float32(boardH) / float32(imgBounds.Dy())
 
 		offStack := op.Offset(image.Pt(labelW, 0)).Push(gtx.Ops)
 		affStack := op.Affine(f32.NewAffine2D(scaleX, 0, 0, 0, scaleY, 0)).Push(gtx.Ops)
 
-		imgOp := paint.NewImageOp(picoImage)
+		imgOp := paint.NewImageOp(img)
 		imgOp.Add(gtx.Ops)
 		clipStack := clip.Rect(imgBounds).Push(gtx.Ops)
 		paint.PaintOp{}.Add(gtx.Ops)
@@ -380,6 +401,10 @@ func layoutPinDiagram(gtx layout.Context, leftPins, rightPins []pindata.Pin) lay
 			pinClickables[physIdx].Layout(cgtx, func(gtx layout.Context) layout.Dimensions {
 				return makePinLabel(matTh, interactivePinText(p), text.End, interactivePinColor(p)).Layout(gtx)
 			})
+			if pinClickables[physIdx].Hovered() {
+				hp := p
+				currentHoverPin = &hp
+			}
 		} else {
 			makePinLabel(matTh, formatPinLabel(p), text.End, colorForPin(p)).Layout(cgtx)
 		}
@@ -403,6 +428,10 @@ func layoutPinDiagram(gtx layout.Context, leftPins, rightPins []pindata.Pin) lay
 			pinClickables[physIdx].Layout(cgtx, func(gtx layout.Context) layout.Dimensions {
 				return makePinLabel(matTh, interactivePinText(p), text.Start, interactivePinColor(p)).Layout(gtx)
 			})
+			if pinClickables[physIdx].Hovered() {
+				hp := p
+				currentHoverPin = &hp
+			}
 		} else {
 			makePinLabel(matTh, formatPinLabel(p), text.Start, colorForPin(p)).Layout(cgtx)
 		}
@@ -561,6 +590,70 @@ func categoryToColor(cat string) color.NRGBA {
 	}
 }
 
+// pinHoverDetail shows information about the pin currently under the cursor.
+// Uses ViewFunc so it reads currentHoverPin during layout (after diagram sets it).
+func pinHoverDetail() ui.View {
+	return ui.ViewFunc(func(gtx layout.Context, th *theme.Theme) layout.Dimensions {
+		hp := currentHoverPin
+		matTh := material.NewTheme()
+		fg := th.Palette.OnBackground
+
+		// Always render exactly 2 lines to avoid layout jumps.
+		line1 := "Hover over a pin to see details."
+		line2 := " " // non-empty placeholder to reserve height
+
+		if hp != nil {
+			p := *hp
+			sel := selections.Get()
+
+			// Line 1: pin identity + status
+			label := p.Label
+			if p.IsGPIO {
+				label = fmt.Sprintf("%s (Pin %d)", p.Label, p.PhysicalPin)
+			}
+			var status string
+			if !p.IsGPIO {
+				switch {
+				case p.IsPower:
+					status = "Power pin"
+				case p.IsGround:
+					status = "Ground pin"
+				default:
+					status = "Special pin (not user-selectable)"
+				}
+			} else if fn, ok := sel[p.GPIO]; ok {
+				status = fmt.Sprintf("Assigned: %s (%s)", fn.Name, fn.Category)
+			} else {
+				status = "Available — select a peripheral function, then click to assign"
+			}
+			line1 = label + " — " + status
+
+			// Line 2: available functions
+			var funcNames []string
+			for _, f := range p.Functions {
+				funcNames = append(funcNames, f.Name)
+			}
+			if len(funcNames) > 0 {
+				line2 = "Functions: " + strings.Join(funcNames, ", ")
+			}
+		}
+
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(matTh, line1)
+				lbl.Font.Weight = font.Bold
+				lbl.Color = fg
+				return lbl.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Caption(matTh, line2)
+				lbl.Color = fg
+				return lbl.Layout(gtx)
+			}),
+		)
+	})
+}
+
 // legendView shows the color key for pin types.
 func legendView() ui.View {
 	return ui.HStack(
@@ -572,4 +665,264 @@ func legendView() ui.View {
 		ui.FixedSpacer(12, 0),
 		ui.Badge("SPC").Warning(), ui.Text("Special"),
 	).Spacing(4)
+}
+
+// layoutChipDiagram renders a QFN-style package with interactive,
+// colored pin rectangles on all 4 sides of a central body.
+// Each pin shows its GPIO number and changes color based on selection state.
+func layoutChipDiagram(gtx layout.Context, pins []pindata.Pin) layout.Dimensions {
+	spec := currentSpec()
+	n := len(pins)
+
+	// Dynamic pin sizing — narrower pins for high pin counts.
+	pinThick := gtx.Dp(24)
+	pinLen := gtx.Dp(36)
+	if n > 40 {
+		pinThick = gtx.Dp(20)
+		pinLen = gtx.Dp(32)
+	}
+
+	// Distribute GPIOs to 4 sides of the QFN package.
+	topN, rightN, bottomN, leftN := chipSides(n)
+
+	// Body size derived from the longest side.
+	bodyW := intMax(topN, bottomN) * pinThick
+	bodyH := intMax(leftN, rightN) * pinThick
+	totalW := pinLen + bodyW + pinLen
+	totalH := pinLen + bodyH + pinLen
+
+	matTh := material.NewTheme()
+	borderColor := color.NRGBA{R: 25, G: 25, B: 25, A: 255}
+	bodyColor := color.NRGBA{R: 45, G: 45, B: 45, A: 255}
+
+	// ── Body ─────────────────────────────────────────────────────────
+	{
+		off := op.Offset(image.Pt(pinLen, pinLen)).Push(gtx.Ops)
+		r := clip.Rect(image.Rect(0, 0, bodyW, bodyH)).Push(gtx.Ops)
+		paint.ColorOp{Color: bodyColor}.Add(gtx.Ops)
+		paint.PaintOp{}.Add(gtx.Ops)
+		r.Pop()
+
+		// Chip name
+		cgtx := gtx
+		cgtx.Constraints = layout.Exact(image.Pt(bodyW, bodyH))
+		chipLbl := material.H6(matTh, spec.Chip)
+		chipLbl.Color = color.NRGBA{R: 170, G: 170, B: 170, A: 255}
+		chipLbl.Alignment = text.Middle
+		lOff := op.Offset(image.Pt(0, bodyH/2-gtx.Dp(18))).Push(gtx.Ops)
+		chipLbl.Layout(cgtx)
+		lOff.Pop()
+
+		// Package name
+		pkgLbl := material.Body2(matTh, chipPackageName(spec.Board))
+		pkgLbl.Color = color.NRGBA{R: 120, G: 120, B: 120, A: 255}
+		pkgLbl.Alignment = text.Middle
+		pOff := op.Offset(image.Pt(0, bodyH/2+gtx.Dp(4))).Push(gtx.Ops)
+		pkgLbl.Layout(cgtx)
+		pOff.Pop()
+
+		off.Pop()
+	}
+
+	// ── Pin 1 marker (dot on body corner) ────────────────────────────
+	{
+		dotR := gtx.Dp(4)
+		cx := pinLen + gtx.Dp(10)
+		cy := pinLen + gtx.Dp(10)
+		r := clip.Ellipse(image.Rect(cx-dotR, cy-dotR, cx+dotR, cy+dotR)).Push(gtx.Ops)
+		paint.ColorOp{Color: color.NRGBA{R: 200, G: 200, B: 200, A: 180}}.Add(gtx.Ops)
+		paint.PaintOp{}.Add(gtx.Ops)
+		r.Pop()
+	}
+
+	// ── Slice pins for each side ─────────────────────────────────────
+	idx := 0
+	topPins := pins[idx : idx+topN]
+	idx += topN
+	rightPins := pins[idx : idx+rightN]
+	idx += rightN
+	bottomPins := pins[idx : idx+bottomN]
+	idx += bottomN
+	leftPins := pins[idx:]
+
+	// Centering offsets for sides with fewer pins than the body dimension.
+	topOff := (bodyW - topN*pinThick) / 2
+	bottomOff := (bodyW - bottomN*pinThick) / 2
+	rightOff := (bodyH - rightN*pinThick) / 2
+	leftOff := (bodyH - leftN*pinThick) / 2
+
+	// ── Top pins (left → right) ──────────────────────────────────────
+	for i, p := range topPins {
+		x := pinLen + topOff + i*pinThick
+		drawChipPin(gtx, matTh, p, x, 0, pinThick, pinLen, borderColor)
+	}
+
+	// ── Right pins (top → bottom) ────────────────────────────────────
+	for i, p := range rightPins {
+		x := pinLen + bodyW
+		y := pinLen + rightOff + i*pinThick
+		drawChipPin(gtx, matTh, p, x, y, pinLen, pinThick, borderColor)
+	}
+
+	// ── Bottom pins (right → left, reversed for QFN convention) ──────
+	for i, p := range bottomPins {
+		x := pinLen + bottomOff + (bottomN-1-i)*pinThick
+		y := pinLen + bodyH
+		drawChipPin(gtx, matTh, p, x, y, pinThick, pinLen, borderColor)
+	}
+
+	// ── Left pins (bottom → top, reversed for QFN convention) ────────
+	for i, p := range leftPins {
+		y := pinLen + leftOff + (leftN-1-i)*pinThick
+		drawChipPin(gtx, matTh, p, 0, y, pinLen, pinThick, borderColor)
+	}
+
+	return layout.Dimensions{Size: image.Pt(totalW, totalH)}
+}
+
+// drawChipPin renders a single QFN pin rectangle.
+// GPIO pins are clickable with state-dependent coloring.
+// Non-GPIO pins (power, ground, special) are static colored blocks.
+func drawChipPin(gtx layout.Context, matTh *material.Theme, p pindata.Pin, x, y, w, h int, border color.NRGBA) {
+	physIdx := p.PhysicalPin - 1
+	bg := chipPinBgColor(p)
+
+	offStack := op.Offset(image.Pt(x, y)).Push(gtx.Ops)
+	cgtx := gtx
+	cgtx.Constraints = layout.Exact(image.Pt(w, h))
+
+	drawPinRect := func(gtx layout.Context) layout.Dimensions {
+		// Border (1px dark outline)
+		bStack := clip.Rect(image.Rect(0, 0, w, h)).Push(gtx.Ops)
+		paint.ColorOp{Color: border}.Add(gtx.Ops)
+		paint.PaintOp{}.Add(gtx.Ops)
+		bStack.Pop()
+
+		// Fill
+		fStack := clip.Rect(image.Rect(1, 1, w-1, h-1)).Push(gtx.Ops)
+		paint.ColorOp{Color: bg}.Add(gtx.Ops)
+		paint.PaintOp{}.Add(gtx.Ops)
+		fStack.Pop()
+
+		// Label
+		label := chipPinLabel(p)
+		lbl := material.Body2(matTh, label)
+		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+		lbl.Alignment = text.Middle
+		lbl.Font.Weight = font.Bold
+		lbl.MaxLines = 1
+		lbl.TextSize = unit.Sp(9)
+
+		textH := gtx.Sp(lbl.TextSize)
+		yOff := (h - textH) / 2
+		if yOff < 0 {
+			yOff = 0
+		}
+		tStack := op.Offset(image.Pt(0, yOff)).Push(gtx.Ops)
+		lbl.Layout(gtx)
+		tStack.Pop()
+
+		return layout.Dimensions{Size: image.Pt(w, h)}
+	}
+
+	if p.IsGPIO {
+		for pinClickables[physIdx].Clicked(cgtx) {
+			handlePinClick(p)
+		}
+	}
+	// All pins (GPIO and non-GPIO) use a Clickable for hover detection.
+	pinClickables[physIdx].Layout(cgtx, func(gtx layout.Context) layout.Dimensions {
+		return drawPinRect(gtx)
+	})
+	if pinClickables[physIdx].Hovered() {
+		hp := p
+		currentHoverPin = &hp
+	}
+
+	offStack.Pop()
+}
+
+// chipPinLabel returns the text shown on a QFN pin rectangle.
+// GPIO pins show their GPIO number; non-GPIO pins show a short abbreviation.
+func chipPinLabel(p pindata.Pin) string {
+	if p.IsGPIO {
+		return fmt.Sprintf("%d", p.GPIO)
+	}
+	if p.IsGround {
+		return "G"
+	}
+	// Power/special: use first 2 chars of the label
+	if len(p.Label) > 2 {
+		return p.Label[:2]
+	}
+	return p.Label
+}
+
+// chipPinBgColor returns the background color for a QFN pin rectangle.
+func chipPinBgColor(p pindata.Pin) color.NRGBA {
+	// Non-GPIO pins: fixed colors by type.
+	if !p.IsGPIO {
+		if p.IsPower {
+			return color.NRGBA{R: 140, G: 30, B: 30, A: 255} // dark red
+		}
+		if p.IsGround {
+			return color.NRGBA{R: 60, G: 60, B: 60, A: 255} // dark gray
+		}
+		// Special
+		return color.NRGBA{R: 160, G: 120, B: 20, A: 255} // amber
+	}
+
+	// GPIO pins: colored by selection state.
+	sel := selections.Get()
+	activeFn := selectedPeriphFunc.Get()
+
+	// Assigned → category color.
+	if fn, ok := sel[p.GPIO]; ok {
+		hex := pindata.CategoryColor(fn.Category)
+		return color.NRGBA{
+			R: uint8((hex >> 16) & 0xFF),
+			G: uint8((hex >> 8) & 0xFF),
+			B: uint8(hex & 0xFF),
+			A: 255,
+		}
+	}
+
+	// Selection mode → cyan for eligible, dimmed for ineligible.
+	if activeFn != "" {
+		for _, f := range p.Functions {
+			if f.Name == activeFn {
+				return color.NRGBA{R: 0, G: 190, B: 230, A: 255}
+			}
+		}
+		return color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+	}
+
+	// Default GPIO.
+	return color.NRGBA{R: 96, G: 125, B: 139, A: 255}
+}
+
+// chipSides returns the number of pins per side for a QFN package.
+func chipSides(n int) (top, right, bottom, left int) {
+	perSide := n / 4
+	return perSide, perSide, perSide, perSide
+}
+
+func chipPackageName(b pindata.Board) string {
+	switch b {
+	case pindata.RP2040Chip:
+		return "QFN-56"
+	case pindata.RP2350AChip:
+		return "QFN-60"
+	case pindata.RP2350BChip:
+		return "QFN-80"
+	default:
+		return ""
+	}
+}
+
+func intMax(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

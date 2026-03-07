@@ -23,35 +23,52 @@ import (
 	"image/color"
 	"image/draw"
 
+	"github.com/amken3d/Pingo/pindata"
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
 )
 
-// Embed the Pico board SVG into the binary at compile time.
-// The //go:embed directive makes the file available without reading
-// from disk at runtime — the binary is self-contained.
+// Embed all SVG assets into the binary at compile time.
 //
-//go:embed assets/pico.svg
+//go:embed assets/pico.svg assets/qfn56.svg assets/qfn60.svg assets/qfn80.svg
 var assetsFS embed.FS
 
-// loadPicoSVG reads the embedded SVG and rasterises it to a Go image.
-//
-// Steps:
-//  1. Read the SVG bytes from the embedded filesystem.
-//  2. Parse the SVG with oksvg.ReadIconStream.
-//  3. Create an NRGBA canvas at 6× the SVG's native size for crisp rendering.
-//  4. Rasterise the SVG paths onto the canvas with rasterx.
-//  5. Return the image.Image for use with ui.Image().
-func loadPicoSVG() image.Image {
-	data, err := assetsFS.ReadFile("assets/pico.svg")
+// chipImages maps Board variants to their rasterised images.
+// Loaded once at startup by loadAllSVGs().
+var chipImages map[pindata.Board]image.Image
+
+// loadAllSVGs rasterises all embedded SVG assets and stores them
+// in chipImages for lookup by Board type.
+// Bare chip variants (QFN) are rendered dynamically — no SVG needed.
+func loadAllSVGs() {
+	boardImg := rasterizeSVG("assets/pico.svg", true)
+	chipImages = map[pindata.Board]image.Image{
+		pindata.Pico:  boardImg,
+		pindata.Pico2: boardImg,
+	}
+}
+
+// boardImage returns the rasterised image for the current board/chip.
+// Returns nil for bare chip variants (rendered dynamically).
+func boardImage(b pindata.Board) image.Image {
+	if img, ok := chipImages[b]; ok {
+		return img
+	}
+	return nil
+}
+
+// rasterizeSVG reads an embedded SVG, rasterises it at 6× scale,
+// and optionally rotates 90° CW (for landscape board SVGs).
+func rasterizeSVG(path string, rotate bool) image.Image {
+	data, err := assetsFS.ReadFile(path)
 	if err != nil {
-		fmt.Println("SVG load error:", err)
+		fmt.Println("SVG load error:", path, err)
 		return image.NewNRGBA(image.Rect(0, 0, 1, 1))
 	}
 
 	icon, err := oksvg.ReadIconStream(bytes.NewReader(data))
 	if err != nil {
-		fmt.Println("SVG parse error:", err)
+		fmt.Println("SVG parse error:", path, err)
 		return image.NewNRGBA(image.Rect(0, 0, 1, 1))
 	}
 
@@ -70,8 +87,10 @@ func loadPicoSVG() image.Image {
 	raster := rasterx.NewDasher(w, h, scanner)
 	icon.Draw(raster, 1.0)
 
-	// Rotate 90° clockwise so the board is vertical with USB at top.
-	return rotateCW90(rgba)
+	if rotate {
+		return rotateCW90(rgba)
+	}
+	return rgba
 }
 
 // rotateCW90 rotates an NRGBA image 90° clockwise.
