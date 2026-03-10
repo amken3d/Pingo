@@ -5,16 +5,21 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"sort"
 	"strings"
 
+	"gioui.org/layout"
+	"gioui.org/widget/material"
+
 	"github.com/amken3d/Pingo/pindata"
+	"github.com/amken3d/immygo/theme"
 	"github.com/amken3d/immygo/ui"
 	"github.com/amken3d/immygo/widget"
 )
 
 // myPinsPage shows a summary of all selected GPIO pins,
-// detects conflicts, warns about PWM sharing, and provides remove/clear actions.
+// detects conflicts, warns about PWM sharing, and provides rename/remove/export actions.
 func myPinsPage() ui.View {
 	sel := selections.Get()
 
@@ -26,14 +31,7 @@ func myPinsPage() ui.View {
 		).Spacing(12)
 	}
 
-	// Sync the persistent grid with current selections (sorted by GPIO).
 	gpios := sortedGPIOs(sel)
-	rows := make([][]string, len(gpios))
-	for i, gp := range gpios {
-		fn := sel[gp]
-		rows[i] = []string{fmt.Sprintf("GP%d", gp), fn.Name, fn.Category}
-	}
-	myPinsGrid.Rows(rows)
 
 	// Conflict and PWM sharing checks.
 	conflicts := pindata.CheckConflicts(sel)
@@ -44,11 +42,31 @@ func myPinsPage() ui.View {
 		ui.Text("My Selected Pins").Headline(),
 		ui.Text(fmt.Sprintf("%d pins selected for your project.", len(sel))).Caption(),
 		ui.Divider(),
-		myPinsGrid,
 	)
 
+	// Each pin: badge, label, function, inline name editor, remove — all in one row.
+	for _, gp := range gpios {
+		g := gp
+		fn := sel[g]
+
+		sections = append(sections,
+			ui.HStack(
+				ui.Badge(fn.Category),
+				ui.Text(fmt.Sprintf("GP%d", g)).Bold(),
+				ui.Text(fn.Name).Caption(),
+				ui.Flex(1, ui.Style(
+					pinNameEditor(g),
+				).Background(editorBg()).Padding(4).Rounded(4)),
+				ui.Button("Remove").OnClick(func() {
+					removePin(g)
+				}),
+			).Spacing(8),
+			ui.Divider(),
+		)
+	}
+
 	if len(conflicts) > 0 {
-		sections = append(sections, ui.Divider(), ui.Text("Conflicts Detected").Title())
+		sections = append(sections, ui.Text("Conflicts Detected").Title())
 		for _, c := range conflicts {
 			sections = append(sections,
 				ui.HStack(
@@ -58,10 +76,11 @@ func myPinsPage() ui.View {
 				).Spacing(8),
 			)
 		}
+		sections = append(sections, ui.Divider())
 	}
 
 	if len(pwmWarnings) > 0 {
-		sections = append(sections, ui.Divider(), ui.Text("PWM Sharing Warnings").Title())
+		sections = append(sections, ui.Text("PWM Sharing Warnings").Title())
 		for _, w := range pwmWarnings {
 			sections = append(sections,
 				ui.HStack(
@@ -70,44 +89,85 @@ func myPinsPage() ui.View {
 				).Spacing(8),
 			)
 		}
+		sections = append(sections, ui.Divider())
 	}
 
-	// Per-pin remove buttons (sorted).
-	sections = append(sections, ui.Divider(), ui.Text("Remove Pins").Title())
-	for _, gp := range gpios {
-		g := gp
-		fn := sel[g]
-		sections = append(sections,
-			ui.HStack(
-				ui.Badge(fn.Category),
-				ui.Text(fmt.Sprintf("GP%d — %s", g, fn.Name)),
-				ui.Button("Remove").OnClick(func() {
-					cur := selections.Get()
-					updated := make(map[int]pindata.Function, len(cur))
-					for k, v := range cur {
-						if k != g {
-							updated[k] = v
-						}
-					}
-					selections.Set(updated)
-				}),
-			).Spacing(8),
-		)
+	// ── Export section ───────────────────────────────────────────────
+	status := exportStatus.Get()
+	var statusView ui.View
+	if status != "" {
+		statusView = ui.Text(status).Caption()
+	} else {
+		statusView = ui.Text("Choose a format to export your pin configuration.").Caption()
 	}
 
 	sections = append(sections,
-		ui.Divider(),
+		ui.Text("Export Pin Configuration").Title(),
+		statusView,
 		ui.HStack(
-			ui.Button("Clear All").OnClick(func() {
-				selections.Set(map[int]pindata.Function{})
+			ui.Button("C/C++ Header").OnClick(func() {
+				names := customNames.Get()
+				saveExport("pingo_pins.h", "C/C++ Header", "*.h", exportCHeader(sel, names))
 			}),
-			ui.Button("Export to Console").OnClick(func() {
-				exportPinList(sel)
+			ui.Button("TinyGo").OnClick(func() {
+				names := customNames.Get()
+				saveExport("pingo_pins.go", "Go Source", "*.go", exportTinyGo(sel, names))
 			}),
-		).Spacing(12),
+			ui.Button("MicroPython").OnClick(func() {
+				names := customNames.Get()
+				saveExport("pingo_pins.py", "Python", "*.py", exportMicroPython(sel, names))
+			}),
+			ui.Button("CSV").OnClick(func() {
+				names := customNames.Get()
+				saveExport("pingo_pins.csv", "CSV", "*.csv", exportCSV(sel, names))
+			}),
+		).Spacing(8),
+		ui.Divider(),
+		ui.Button("Clear All").OnClick(func() {
+			clearAllSelections()
+		}),
 	)
 
-	return ui.VStack(sections...).Spacing(12)
+	return ui.ScrollPersistent(myPinsScrollList, ui.VStack(sections...).Spacing(8))
+}
+
+// pinNameEditor returns a ViewFunc that renders an inline Gio editor for a pin's custom name.
+func editorBg() color.NRGBA {
+	if isDark.Get() {
+		return color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+	}
+	return color.NRGBA{R: 240, G: 240, B: 240, A: 255}
+}
+
+func pinNameEditor(gpio int) ui.View {
+	return ui.ViewFunc(func(gtx layout.Context, th *theme.Theme) layout.Dimensions {
+		ed := &pinNameEditors[gpio]
+
+		// Render the editor.
+		matTh := material.NewTheme()
+		style := material.Editor(matTh, ed, "Custom name...")
+		style.Color = th.Palette.OnBackground
+		style.HintColor = color.NRGBA{R: 160, G: 160, B: 160, A: 255}
+		dims := style.Layout(gtx)
+
+		// Sync editor → state.
+		currentNames := customNames.Get()
+		currentName := currentNames[gpio]
+		if ed.Text() != currentName {
+			updated := make(map[int]string, len(currentNames)+1)
+			for k, v := range currentNames {
+				updated[k] = v
+			}
+			if t := ed.Text(); t != "" {
+				updated[gpio] = t
+			} else {
+				delete(updated, gpio)
+			}
+			customNames.Set(updated)
+		}
+
+		return dims
+	})
 }
 
 // sortedGPIOs returns GPIO numbers from the selection map in ascending order.
@@ -150,16 +210,4 @@ func checkPWMSharing(sel map[int]pindata.Function) []string {
 		}
 	}
 	return warnings
-}
-
-// exportPinList prints the selected pin configuration to stdout.
-func exportPinList(sel map[int]pindata.Function) {
-	fmt.Println("// Pingo — Generated Pin Configuration")
-	fmt.Println("// Board:", currentSpec().Name)
-	fmt.Println("//")
-	for _, gp := range sortedGPIOs(sel) {
-		fn := sel[gp]
-		fmt.Printf("// GP%-2d -> %s (%s)\n", gp, fn.Name, fn.Category)
-	}
-	fmt.Println()
 }
