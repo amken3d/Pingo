@@ -48,6 +48,12 @@ var (
 	// and what function they chose for each one.
 	selections = ui.NewState(map[int]pindata.Function{})
 
+	// customNames stores user-defined descriptive names for selected pins.
+	customNames = ui.NewState(map[int]string{})
+
+	// exportStatus holds a message shown after an export operation.
+	exportStatus = ui.NewState("")
+
 	// selectedPeriphFunc holds the peripheral function being assigned
 	// (e.g., "SPI0 RX"). Empty string means no function is active.
 	selectedPeriphFunc = ui.NewState("")
@@ -159,17 +165,26 @@ func initAI() {
 	})
 }
 
-// ─── Persistent DataGrid for My Pins Page ────────────────────────────
-// Created once so the widget state persists across frames (no flicker).
+// ─── Per-Pin Name Editors ────────────────────────────────────────────
+// Persistent Gio editors for inline custom name editing on My Pins page.
+// One per possible GPIO (max 50 covers all board variants).
 
-var myPinsGrid = ui.DataGrid(
-	ui.Col("GPIO"),
-	ui.Col("Function"),
-	ui.Col("Category"),
-).Striped(true)
+var pinNameEditors [50]giowidget.Editor
 
-// ─── Persistent Scroll List ──────────────────────────────────────────
+func init() {
+	for i := range pinNameEditors {
+		pinNameEditors[i].SingleLine = true
+	}
+}
+
+// ─── Persistent Scroll Lists ─────────────────────────────────────────
 // Must persist across frames so scroll position is retained.
+
+var myPinsScrollList = func() *giowidget.List {
+	l := &giowidget.List{}
+	l.Axis = layout.Vertical
+	return l
+}()
 
 var settingsScrollList = func() *giowidget.List {
 	l := &giowidget.List{}
@@ -207,8 +222,43 @@ func currentSpec() pindata.BoardSpec {
 func switchBoard(idx int) {
 	if boardChoice.Get() != idx {
 		boardChoice.Set(idx)
-		selections.Set(map[int]pindata.Function{})
+		clearAllSelections()
 		activeFilter.Set("All")
 		selectedPeriphFunc.Set("")
 	}
+}
+
+// clearAllSelections resets selections, custom names, and editor state.
+func clearAllSelections() {
+	selections.Set(map[int]pindata.Function{})
+	customNames.Set(map[int]string{})
+	for i := range pinNameEditors {
+		pinNameEditors[i].SetText("")
+	}
+	exportStatus.Set("")
+}
+
+// removePin removes a single pin from selections and custom names.
+func removePin(gpio int) {
+	sel := selections.Get()
+	updated := make(map[int]pindata.Function, len(sel))
+	for k, v := range sel {
+		if k != gpio {
+			updated[k] = v
+		}
+	}
+	selections.Set(updated)
+
+	names := customNames.Get()
+	if _, ok := names[gpio]; ok {
+		updatedNames := make(map[int]string, len(names))
+		for k, v := range names {
+			if k != gpio {
+				updatedNames[k] = v
+			}
+		}
+		customNames.Set(updatedNames)
+	}
+
+	pinNameEditors[gpio].SetText("")
 }

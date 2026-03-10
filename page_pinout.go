@@ -254,13 +254,18 @@ func selectionTable() ui.View {
 	}
 	sort.Ints(gpios)
 
+	names := customNames.Get()
 	rows := make([]ui.View, 0, len(gpios))
 	for _, gp := range gpios {
 		fn := sel[gp]
+		label := fmt.Sprintf("GP%d", gp)
+		if name, ok := names[gp]; ok && name != "" {
+			label = fmt.Sprintf("GP%d (%s)", gp, name)
+		}
 		rows = append(rows,
 			ui.HStack(
 				ui.Badge(fn.Category),
-				ui.Text(fmt.Sprintf("GP%d", gp)).Bold(),
+				ui.Text(label).Bold(),
 				ui.Text(fn.Name).Caption(),
 			).Spacing(8),
 		)
@@ -274,7 +279,7 @@ func selectionTable() ui.View {
 	items = append(items,
 		ui.Divider(),
 		ui.Button("Clear All").OnClick(func() {
-			selections.Set(map[int]pindata.Function{})
+			clearAllSelections()
 		}),
 	)
 
@@ -309,13 +314,7 @@ func handlePinClick(p pindata.Pin) {
 
 	// Already assigned → deassign (toggle off).
 	if _, ok := sel[p.GPIO]; ok {
-		updated := make(map[int]pindata.Function, len(sel))
-		for k, v := range sel {
-			if k != p.GPIO {
-				updated[k] = v
-			}
-		}
-		selections.Set(updated)
+		removePin(p.GPIO)
 		return
 	}
 
