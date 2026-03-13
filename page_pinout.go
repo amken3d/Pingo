@@ -62,13 +62,11 @@ func pinoutPage() ui.View {
 	var pinDiagram ui.View
 
 	if spec.Board.IsChip() {
-		// Bare chip: render QFN package with all physical pins.
 		allPins := spec.Pins
 		pinDiagram = ui.ViewFunc(func(gtx layout.Context, th *theme.Theme) layout.Dimensions {
 			return layoutChipDiagram(gtx, allPins)
 		})
 	} else {
-		// Board: DIP-40 layout with SVG image.
 		var leftPins, rightPins []pindata.Pin
 		for _, p := range spec.Pins {
 			if p.PhysicalPin <= 20 {
@@ -77,8 +75,6 @@ func pinoutPage() ui.View {
 				rightPins = append(rightPins, p)
 			}
 		}
-		// Right side pins are numbered bottom-to-top (21 at bottom, 40 at top).
-		// Reverse so they render top-to-bottom matching the left side rows.
 		for i, j := 0, len(rightPins)-1; i < j; i, j = i+1, j-1 {
 			rightPins[i], rightPins[j] = rightPins[j], rightPins[i]
 		}
@@ -104,7 +100,21 @@ func pinoutPage() ui.View {
 	pioLine := fmt.Sprintf("PIO: %d blocks x %d SMs  |  PWM channels: %d",
 		spec.PIOBlocks, spec.PIOSMs, spec.PWMChannels)
 
-	// AI chat panel (persistent widget from state.go).
+	// ── Left column: header info (rigid) + pin diagram (fills remaining) ──
+	leftCol := ui.VStack(
+		ui.Text("Pin Header — "+spec.Name).Headline().Center(),
+		ui.Text(specLine).Caption().Center(),
+		ui.Text(periphLine).Caption().Center(),
+		ui.Text(pioLine).Caption().Center(),
+		ui.Divider(),
+		peripheralSelector(spec),
+		ui.Text("Select a peripheral, pick a function, then click an eligible pin. Click an assigned pin to remove it.").Caption(),
+		ui.Divider(),
+		pinHoverDetail(),
+		ui.Flex(1, ui.Scroll(pinDiagram)),
+	).Spacing(4)
+
+	// ── Right column: assigned pins (top 60%) + AI assistant (bottom 40%) ──
 	sel := selections.Get()
 	var selCtx string
 	if len(sel) > 0 {
@@ -118,24 +128,14 @@ func pinoutPage() ui.View {
 	}
 	selectionContext := selCtx
 
-	quickActions := ui.HStack(
-		ui.Button("Best I2C pins?").OnClick(func() {
-			go askAI("What are the best GPIO pins to use for I2C on this board? " + selectionContext)
-		}),
-		ui.Button("SPI setup?").OnClick(func() {
-			go askAI("Recommend a good SPI pin configuration. " + selectionContext)
-		}),
-		ui.Button("Check my selection").OnClick(func() {
-			go askAI("Review my pin selections for conflicts or issues: " + selectionContext)
-		}),
-	).Spacing(8)
+	// Assigned pins (scrollable, capped so it doesn't push AI off screen).
+	rightTop := ui.Style(
+		ui.ScrollPersistent(assignedPinsScrollList,
+			ui.Style(selectionTable()).Padding(8),
+		),
+	).MaxHeight(300)
 
-	chatView := ui.ViewFunc(func(gtx layout.Context, th *theme.Theme) layout.Dimensions {
-		gtx.Constraints.Min.Y = gtx.Dp(unit.Dp(300))
-		return chatPanel.Layout(gtx, th)
-	})
-
-	// AI status indicator.
+	// AI assistant section.
 	status := aiStatus.Get()
 	var statusView ui.View
 	switch {
@@ -149,35 +149,65 @@ func pinoutPage() ui.View {
 		statusView = ui.Text("Loading AI engine...").Caption().Color(color.NRGBA{R: 180, G: 150, B: 50, A: 255})
 	}
 
-	// Right panel: assigned pins table (top-aligned, grows down) + AI chat (bottom).
-	rightPanel := ui.VStack(
-		selectionTable(),
-		ui.Spacer(),
+	var aiHint ui.View
+	if len(sel) == 0 {
+		aiHint = ui.Text("Tip: Select pins first, or ask about pin assignments.").Caption().Color(color.NRGBA{R: 180, G: 150, B: 50, A: 255})
+	} else {
+		aiHint = ui.Text(fmt.Sprintf("Context: %d pins selected.", len(sel))).Caption()
+	}
+
+	applyResult := aiApplyStatus.Get()
+	var applyStatusView ui.View
+	if applyResult != "" {
+		applyStatusView = ui.Text(applyResult).Caption()
+	} else {
+		applyStatusView = ui.Text("").Caption()
+	}
+
+	// Quick action buttons — stacked in two rows to avoid overflow.
+	quickActions := ui.VStack(
+		ui.HStack(
+			ui.Button("I2C pins?").OnClick(func() {
+				go askAI("What are the best GPIO pins to use for I2C on this board? " + selectionContext)
+			}),
+			ui.Button("SPI setup?").OnClick(func() {
+				go askAI("Recommend a good SPI pin configuration. " + selectionContext)
+			}),
+		).Spacing(4),
+		ui.HStack(
+			ui.Button("Check pins").OnClick(func() {
+				go askAI("Review my pin selections for conflicts or issues: " + selectionContext)
+			}),
+			ui.Button("Apply AI").OnClick(func() {
+				result := applySuggestions()
+				aiApplyStatus.Set(result)
+			}),
+		).Spacing(4),
+		applyStatusView,
+	).Spacing(2)
+
+	rightBottom := ui.VStack(
 		ui.Divider(),
 		ui.HStack(
-			ui.Text("AI Pin Assistant").Title(),
+			ui.Text("AI Assistant").Title(),
 			ui.Spacer(),
 			statusView,
 		),
+		aiHint,
 		quickActions,
-		chatView,
+		ui.Flex(1, selectableChatView()),
 	).Spacing(4)
 
-	return ui.VStack(
-		ui.Text("Pin Header — "+spec.Name).Headline().Center(),
-		ui.Text(specLine).Caption().Center(),
-		ui.Text(periphLine).Caption().Center(),
-		ui.Text(pioLine).Caption().Center(),
-		ui.Divider(),
-		peripheralSelector(spec),
-		ui.Text("Select a peripheral, pick a function, then click an eligible pin. Click an assigned pin to remove it.").Caption(),
-		ui.Divider(),
-		pinHoverDetail(),
-		ui.HStack(
-			ui.Flex(3, pinDiagram),
-			ui.Flex(2, rightPanel),
-		),
-	).Spacing(8)
+	rightCol := ui.VStack(
+		rightTop,
+		ui.Flex(1, rightBottom),
+	)
+
+	// ── Two-column layout: 70/30 split ──
+	return ui.HStack(
+		ui.Flex(7, ui.Style(leftCol).Padding(8)),
+		ui.Flex(3, ui.Style(rightCol).Padding(8)),
+	)
 }
 
 // peripheralSelector builds the category + function picker.

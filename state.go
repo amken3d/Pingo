@@ -54,6 +54,9 @@ var (
 	// exportStatus holds a message shown after an export operation.
 	exportStatus = ui.NewState("")
 
+	// aiApplyStatus holds the result message from applying AI suggestions.
+	aiApplyStatus = ui.NewState("")
+
 	// selectedPeriphFunc holds the peripheral function being assigned
 	// (e.g., "SPI0 RX"). Empty string means no function is active.
 	selectedPeriphFunc = ui.NewState("")
@@ -137,7 +140,14 @@ When asked about pin selection:
 - Remember ADC is only on GP26-GP28
 - All GPIOs are 3.3V, not 5V tolerant
 - Suggest optimal pin groupings for common peripherals
-Keep answers concise and practical. Use pin names like GP0, GP1, etc.`
+Keep answers concise and practical. Use pin names like GP0, GP1, etc.
+
+IMPORTANT: When suggesting specific pin assignments, always include a structured
+summary block at the end using this exact format (one per line):
+PIN: GP0 -> SPI0 RX
+PIN: GP1 -> SPI0 TX
+PIN: GP2 -> SPI0 SCK
+This allows the app to auto-apply your suggestions.`
 }
 
 func initAI() {
@@ -181,6 +191,12 @@ func init() {
 // Must persist across frames so scroll position is retained.
 
 var myPinsScrollList = func() *giowidget.List {
+	l := &giowidget.List{}
+	l.Axis = layout.Vertical
+	return l
+}()
+
+var assignedPinsScrollList = func() *giowidget.List {
 	l := &giowidget.List{}
 	l.Axis = layout.Vertical
 	return l
